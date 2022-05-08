@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstring>
 #include "embed.h"
+#include "feline.h"
 #include "gfx.h"
 #include "globals.h"
 #include "log.h"
@@ -650,6 +651,11 @@ bool Arch::route()
     route_ecp5_globals(getCtx());
     assignArchInfo();
     assign_budget(getCtx(), true);
+
+    // TEST
+    Feline::BaseFelineAPI feline_impl(getCtx());
+    feline_route(getCtx(), FelineCfg(getCtx()), &feline_impl);
+    // TEST
 
     bool result;
     if (router == "router1") {
