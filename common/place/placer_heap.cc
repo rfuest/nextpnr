@@ -56,6 +56,36 @@
 NEXTPNR_NAMESPACE_BEGIN
 
 namespace {
+
+enum class Axis
+{
+    X,
+    Y
+};
+
+struct RealLoc
+{
+    RealLoc() : x(0), y(0){};
+    RealLoc(double x, double y) : x(x), y(y){};
+    double x, y;
+    RealLoc &operator+=(const RealLoc &other)
+    {
+        x += other.x;
+        y += other.y;
+        return *this;
+    }
+    RealLoc &operator/=(double factor)
+    {
+        x /= factor;
+        y /= factor;
+        return *this;
+    }
+    RealLoc operator/(double factor) const { return RealLoc(x / factor, y / factor); }
+    // to simplify axis-generic code
+    double &at(Axis axis) { return (axis == Axis::Y) ? y : x; }
+    const double &at(Axis axis) const { return (axis == Axis::Y) ? y : x; }
+};
+
 // A simple internal representation for a sparse system of equations Ax = rhs
 // This is designed to decouple the functions that build the matrix to the engine that
 // solves it, and the representation that requires
@@ -167,11 +197,11 @@ class HeAPPlacer
             setup_solve_cells();
             auto solve_startt = std::chrono::high_resolution_clock::now();
 #ifdef NPNR_DISABLE_THREADS
-            build_solve_direction(false, -1);
-            build_solve_direction(true, -1);
+            build_solve_direction(Axis::X, -1);
+            build_solve_direction(Axis::Y, -1);
 #else
-            boost::thread xaxis([&]() { build_solve_direction(false, -1); });
-            build_solve_direction(true, -1);
+            boost::thread xaxis([&]() { build_solve_direction(Axis::X, -1); });
+            build_solve_direction(Axis::Y, -1);
             xaxis.join();
 #endif
             auto solve_endt = std::chrono::high_resolution_clock::now();
@@ -237,14 +267,14 @@ class HeAPPlacer
                 // Build the connectivity matrix and run the solver; multithreaded between x and y axes if applicable
 #ifndef NPNR_DISABLE_THREADS
                 if (solve_cells.size() >= 500) {
-                    boost::thread xaxis([&]() { build_solve_direction(false, (iter == 0) ? -1 : iter); });
-                    build_solve_direction(true, (iter == 0) ? -1 : iter);
+                    boost::thread xaxis([&]() { build_solve_direction(Axis::X, (iter == 0) ? -1 : iter); });
+                    build_solve_direction(Axis::Y, (iter == 0) ? -1 : iter);
                     xaxis.join();
                 } else
 #endif
                 {
-                    build_solve_direction(false, (iter == 0) ? -1 : iter);
-                    build_solve_direction(true, (iter == 0) ? -1 : iter);
+                    build_solve_direction(Axis::X, (iter == 0) ? -1 : iter);
+                    build_solve_direction(Axis::Y, (iter == 0) ? -1 : iter);
                 }
                 auto solve_endt = std::chrono::high_resolution_clock::now();
                 solve_time += std::chrono::duration<double>(solve_endt - solve_startt).count();
@@ -393,8 +423,10 @@ class HeAPPlacer
     {
         int x, y;
         int legal_x, legal_y;
-        double rawx, rawy;
+        RealLoc r;
         bool locked, global;
+        int &pos(Axis axis) { return (axis == Axis::Y) ? y : x; }
+        int &legal_pos(Axis axis) { return (axis == Axis::Y) ? legal_y : legal_x; }
     };
     dict<IdString, CellLocation> cell_locs;
     // The set of cells that we will actually place. This excludes locked cells and children cells of macros/chains
@@ -510,12 +542,12 @@ class HeAPPlacer
     }
 
     // Build and solve in one direction
-    void build_solve_direction(bool yaxis, int iter)
+    void build_solve_direction(Axis axis, int iter)
     {
         for (int i = 0; i < 5; i++) {
             EquationSystem<double> esx(solve_cells.size(), solve_cells.size());
-            build_equations(esx, yaxis, iter);
-            solve_equations(esx, yaxis);
+            build_equations(esx, axis, iter);
+            solve_equations(esx, axis);
         }
     }
 
@@ -691,13 +723,11 @@ class HeAPPlacer
     }
 
     // Build the system of equations for either X or Y
-    void build_equations(EquationSystem<double> &es, bool yaxis, int iter = -1)
+    void build_equations(EquationSystem<double> &es, Axis axis, int iter = -1)
     {
         // Return the x or y position of a cell, depending on ydir
-        auto cell_pos = [&](CellInfo *cell) { return yaxis ? cell_locs.at(cell->name).y : cell_locs.at(cell->name).x; };
-        auto legal_pos = [&](CellInfo *cell) {
-            return yaxis ? cell_locs.at(cell->name).legal_y : cell_locs.at(cell->name).legal_x;
-        };
+        auto cell_pos = [&](CellInfo *cell) { return cell_locs.at(cell->name).pos(axis); };
+        auto legal_pos = [&](CellInfo *cell) { return cell_locs.at(cell->name).legal_pos(axis); };
 
         es.reset();
 
@@ -738,7 +768,7 @@ class HeAPPlacer
                 }
                 if (var.cell->cluster != ClusterId()) {
                     Loc offset = ctx->getClusterOffset(var.cell);
-                    es.add_rhs(row, -(yaxis ? offset.y : offset.x) * weight);
+                    es.add_rhs(row, -((axis == Axis::Y) ? offset.y : offset.x) * weight);
                 }
             };
 
@@ -749,9 +779,10 @@ class HeAPPlacer
                     if (other == &port)
                         return;
                     int o_pos = cell_pos(other->cell);
-                    double weight = 1.0 / (ni->users.entries() *
-                                           std::max<double>(1, (yaxis ? cfg.hpwl_scale_y : cfg.hpwl_scale_x) *
-                                                                       std::abs(o_pos - this_pos)));
+                    double weight =
+                            1.0 / (ni->users.entries() *
+                                   std::max<double>(1, ((axis == Axis::Y) ? cfg.hpwl_scale_y : cfg.hpwl_scale_x) *
+                                                               std::abs(o_pos - this_pos)));
 
                     if (user_idx) {
                         weight *= (1.0 + cfg.timingWeight * std::pow(tmg.get_criticality(CellPortKey(port)),
@@ -775,9 +806,9 @@ class HeAPPlacer
                 int l_pos = legal_pos(solve_cells.at(row));
                 int c_pos = cell_pos(solve_cells.at(row));
 
-                double weight =
-                        alpha * iter /
-                        std::max<double>(1, (yaxis ? cfg.hpwl_scale_y : cfg.hpwl_scale_x) * std::abs(l_pos - c_pos));
+                double weight = alpha * iter /
+                                std::max<double>(1, ((axis == Axis::Y) ? cfg.hpwl_scale_y : cfg.hpwl_scale_x) *
+                                                            std::abs(l_pos - c_pos));
                 // Add an arc from legalised to current position
                 es.add_coeff(row, row, weight);
                 es.add_rhs(row, weight * l_pos);
@@ -786,27 +817,27 @@ class HeAPPlacer
     }
 
     // Build the system of equations for either X or Y
-    void solve_equations(EquationSystem<double> &es, bool yaxis)
+    void solve_equations(EquationSystem<double> &es, Axis axis)
     {
         // Return the x or y position of a cell, depending on ydir
-        auto cell_pos = [&](CellInfo *cell) { return yaxis ? cell_locs.at(cell->name).y : cell_locs.at(cell->name).x; };
+        auto cell_pos = [&](CellInfo *cell) { return cell_locs.at(cell->name).pos(axis); };
         std::vector<double> vals;
         std::transform(solve_cells.begin(), solve_cells.end(), std::back_inserter(vals), cell_pos);
         es.solve(vals, cfg.solverTolerance);
-        for (size_t i = 0; i < vals.size(); i++)
-            if (yaxis) {
-                cell_locs.at(solve_cells.at(i)->name).rawy = vals.at(i);
+        for (size_t i = 0; i < vals.size(); i++) {
+            cell_locs.at(solve_cells.at(i)->name).r.at(axis) = vals.at(i);
+            if (axis == Axis::Y) {
                 cell_locs.at(solve_cells.at(i)->name).y = std::min(max_y, std::max(0, int(vals.at(i))));
                 if (solve_cells.at(i)->region != nullptr)
                     cell_locs.at(solve_cells.at(i)->name).y =
                             limit_to_reg(solve_cells.at(i)->region, cell_locs.at(solve_cells.at(i)->name).y, true);
             } else {
-                cell_locs.at(solve_cells.at(i)->name).rawx = vals.at(i);
                 cell_locs.at(solve_cells.at(i)->name).x = std::min(max_x, std::max(0, int(vals.at(i))));
                 if (solve_cells.at(i)->region != nullptr)
                     cell_locs.at(solve_cells.at(i)->name).x =
                             limit_to_reg(solve_cells.at(i)->region, cell_locs.at(solve_cells.at(i)->name).x, false);
             }
+        }
     }
 
     // Compute HPWL
@@ -1543,6 +1574,7 @@ class HeAPPlacer
 
         boost::optional<std::pair<int, int>> cut_region(SpreaderRegion &r, bool dir)
         {
+            Axis axis = dir ? Axis::Y : Axis::X;
             cut_cells.clear();
             auto &cal = cells_at_location;
             int total_cells = 0, total_bels = 0;
@@ -1557,8 +1589,7 @@ class HeAPPlacer
                 total_cells += p->chain_size.count(cell->name) ? p->chain_size.at(cell->name) : 1;
             }
             std::sort(cut_cells.begin(), cut_cells.end(), [&](const CellInfo *a, const CellInfo *b) {
-                return dir ? (p->cell_locs.at(a->name).rawy < p->cell_locs.at(b->name).rawy)
-                           : (p->cell_locs.at(a->name).rawx < p->cell_locs.at(b->name).rawx);
+                return (p->cell_locs.at(a->name).r.at(axis) < p->cell_locs.at(b->name).r.at(axis));
             });
 
             if (cut_cells.size() < 2)
@@ -1727,8 +1758,7 @@ class HeAPPlacer
                 int N = cells_end - cells_start;
                 if (N <= 2) {
                     for (int i = cells_start; i < cells_end; i++) {
-                        auto &pos = dir ? p->cell_locs.at(cut_cells.at(i)->name).rawy
-                                        : p->cell_locs.at(cut_cells.at(i)->name).rawx;
+                        auto &pos = p->cell_locs.at(cut_cells.at(i)->name).r.at(axis);
                         pos = area_l + i * ((area_r - area_l) / N);
                     }
                     return;
@@ -1742,10 +1772,8 @@ class HeAPPlacer
                 bin_bounds.emplace_back(cells_end, area_r + 0.99);
                 for (int i = 0; i < K; i++) {
                     auto &bl = bin_bounds.at(i), br = bin_bounds.at(i + 1);
-                    double orig_left = dir ? p->cell_locs.at(cut_cells.at(bl.first)->name).rawy
-                                           : p->cell_locs.at(cut_cells.at(bl.first)->name).rawx;
-                    double orig_right = dir ? p->cell_locs.at(cut_cells.at(br.first - 1)->name).rawy
-                                            : p->cell_locs.at(cut_cells.at(br.first - 1)->name).rawx;
+                    double orig_left = p->cell_locs.at(cut_cells.at(bl.first)->name).r.at(axis);
+                    double orig_right = p->cell_locs.at(cut_cells.at(br.first - 1)->name).r.at(axis);
                     double m = (br.second - bl.second) / std::max(0.00001, orig_right - orig_left);
                     for (int j = bl.first; j < br.first; j++) {
                         Region *cr = cut_cells.at(j)->region;
@@ -1754,13 +1782,11 @@ class HeAPPlacer
                             double brsc = p->limit_to_reg(cr, br.second, dir);
                             double blsc = p->limit_to_reg(cr, bl.second, dir);
                             double mr = (brsc - blsc) / std::max(0.00001, orig_right - orig_left);
-                            auto &pos = dir ? p->cell_locs.at(cut_cells.at(j)->name).rawy
-                                            : p->cell_locs.at(cut_cells.at(j)->name).rawx;
+                            auto &pos = p->cell_locs.at(cut_cells.at(j)->name).r.at(axis);
                             NPNR_ASSERT(pos >= orig_left && pos <= orig_right);
                             pos = blsc + mr * (pos - orig_left);
                         } else {
-                            auto &pos = dir ? p->cell_locs.at(cut_cells.at(j)->name).rawy
-                                            : p->cell_locs.at(cut_cells.at(j)->name).rawx;
+                            auto &pos = p->cell_locs.at(cut_cells.at(j)->name).r.at(axis);
                             NPNR_ASSERT(pos >= orig_left && pos <= orig_right);
                             pos = bl.second + m * (pos - orig_left);
                         }
@@ -1776,8 +1802,8 @@ class HeAPPlacer
                 }
             for (auto cell : cut_cells) {
                 auto &cl = p->cell_locs.at(cell->name);
-                cl.x = std::min(r.x1, std::max(r.x0, int(cl.rawx)));
-                cl.y = std::min(r.y1, std::max(r.y0, int(cl.rawy)));
+                cl.x = std::min(r.x1, std::max(r.x0, int(cl.r.at(Axis::X))));
+                cl.y = std::min(r.y1, std::max(r.y0, int(cl.r.at(Axis::Y))));
                 cells_at_location.at(cl.x).at(cl.y).push_back(cell);
             }
             SpreaderRegion rl, rr;
