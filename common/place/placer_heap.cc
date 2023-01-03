@@ -825,17 +825,26 @@ class HeAPPlacer
         std::transform(solve_cells.begin(), solve_cells.end(), std::back_inserter(vals), cell_pos);
         es.solve(vals, cfg.solverTolerance);
         for (size_t i = 0; i < vals.size(); i++) {
-            cell_locs.at(solve_cells.at(i)->name).r.at(axis) = vals.at(i);
+            CellInfo *cell = solve_cells.at(i);
+            auto &cl = cell_locs.at(cell->name);
+            cl.r.at(axis) = vals.at(i);
             if (axis == Axis::Y) {
-                cell_locs.at(solve_cells.at(i)->name).y = std::min(max_y, std::max(0, int(vals.at(i))));
-                if (solve_cells.at(i)->region != nullptr)
-                    cell_locs.at(solve_cells.at(i)->name).y =
-                            limit_to_reg(solve_cells.at(i)->region, cell_locs.at(solve_cells.at(i)->name).y, true);
+                cl.y = std::min(max_y, std::max(0, int(vals.at(i))));
+                if (cell->region != nullptr)
+                    cl.y = limit_to_reg(cell->region, cl.y, true);
             } else {
-                cell_locs.at(solve_cells.at(i)->name).x = std::min(max_x, std::max(0, int(vals.at(i))));
-                if (solve_cells.at(i)->region != nullptr)
-                    cell_locs.at(solve_cells.at(i)->name).x =
-                            limit_to_reg(solve_cells.at(i)->region, cell_locs.at(solve_cells.at(i)->name).x, false);
+                cl.x = std::min(max_x, std::max(0, int(vals.at(i))));
+                if (cell->region != nullptr)
+                    cl.x = limit_to_reg(cell->region, cl.x, false);
+            }
+            if (cell->cluster != ClusterId()) {
+                for (auto child : cluster2cells.at(cell->cluster)) {
+                    Loc offset = ctx->getClusterOffset(child);
+                    if (axis == Axis::Y)
+                        cell_locs.at(child->name).y = std::max(0, std::min(max_y, cl.y + offset.y));
+                    else
+                        cell_locs.at(child->name).x = std::max(0, std::min(max_x, cl.x + offset.x));
+                }
             }
         }
     }
