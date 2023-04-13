@@ -41,7 +41,7 @@ struct parser_view
     parser_view(char *ptr, size_t length) : m_ptr(ptr), m_length(length){};
 
     static constexpr size_t npos = std::numeric_limits<size_t>::max();
-    char operator[](size_t idx)
+    char operator[](size_t idx) const
     {
         NPNR_ASSERT(idx < m_length);
         return m_ptr[idx];
@@ -147,7 +147,19 @@ struct parser_view
         NPNR_ASSERT(pos != npos);
         return std::make_pair(parser_view(m_ptr, pos), parser_view(m_ptr + pos + 1, m_length - (pos + 1)));
     }
+
+    friend bool operator==(const parser_view &a, const char *str);
 };
+
+inline bool operator==(const parser_view &a, const char *str) {
+    for (size_t i = 0; i < a.size(); i++) {
+        if (*str == '\0')
+            return false;
+        if (*str++ != a[i])
+            return false;
+    }
+    return (*str == '\0');
+}
 
 struct CsvParser
 {

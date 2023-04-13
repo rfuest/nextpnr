@@ -19,6 +19,7 @@
 #ifndef FAB_CFG_H
 #define FAB_CFG_H
 
+#include "fabric_parsing.h"
 #include "fab_defs.h"
 #include "hashlib.h"
 #include "idstring.h"
@@ -60,7 +61,9 @@ struct LogicConfig
     unsigned lut_k = 4; // base number of inputs for lookup table
     enum LutType
     {
-        SINGLE_LUT,
+        SINGLE_LUT, // no fracturability
+        HALF_TAP_LUT, // fixed tap of the lower half to second output
+        FULL_SPLIT_LUT, // as above but with a mux to split the first output too
         // ...
     } lut_type = LutType::SINGLE_LUT; // different types of fracturable LUT structure
 
@@ -90,6 +93,8 @@ struct LogicConfig
     uint32_t dedi_ff_output = 0; // mask of flipflops in a LC that have dedicated outputs
 
     ControlSetConfig clk, sr, en; // flipflop control set routing
+
+    void read_csv(CsvParser &parser);
 };
 
 struct FabricConfig

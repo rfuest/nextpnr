@@ -46,12 +46,19 @@ struct FabulousImpl : ViaductAPI
     FabulousImpl(const dict<std::string, std::string> &args)
     {
         for (auto a : args) {
-            if (a.first == "fasm")
+            if (a.first == "fasm") {
                 fasm_file = a.second;
-            else if (a.first == "lut_k")
+            } else if (a.first == "lut_k") {
                 cfg.clb.lut_k = std::stoi(a.second);
-            else
+            } else if (a.first == "fab_cfg") {
+                std::ifstream in(a.second);
+                if (!in)
+                    log_error("failed to open fabric config file '%s'\n", a.second.c_str());
+                CsvParser parser(in);
+                cfg.clb.read_csv(parser);
+            } else {
                 log_error("unrecognised fabulous option '%s'\n", a.first.c_str());
+            }
         }
     }
 
