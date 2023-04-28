@@ -5695,6 +5695,9 @@ void gfxSetIOBWireDecals(Arch *arch, BelInfo &bel)
 
     // set decals for I, O and OE input wires
     for (auto pi : bel.pins) {
+        if (pi.first == id_GW9_ALWAYS_LOW0 || pi.first == id_GW9_ALWAYS_LOW1 || pi.first == id_GW9C_ALWAYS_LOW0 || pi.first == id_GW9C_ALWAYS_LOW1) {
+          continue;
+        }
         WireInfo &wi = arch->wire_info(pi.second.wire);
         // decal name: wire_port_z_active|inactive
         snprintf(buf, sizeof(buf), "%s_%s_%u_active", wi.type.c_str(arch), pi.first.c_str(arch), bel.z);
